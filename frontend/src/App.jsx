@@ -1,16 +1,18 @@
 import React, { useState, useEffect } from 'react';
 import CameraManagement from './components/CameraManagement';
 import CameraStream from './components/CameraStream';
+import WorkerManagement from './components/WorkerManagement';
+import AttendanceScanner from './components/AttendanceScanner';
 import './index.css';
+import './modals.css';
 
 const API = 'http://localhost:8000';
 
 function App() {
-  const [tab, setTab]         = useState('manage'); // 'manage' | 'monitor'
+  const [tab, setTab]         = useState('manage');
   const [cameras, setCameras] = useState([]);
   const [loadError, setLoadError] = useState('');
 
-  // Load all cameras from MongoDB on mount
   useEffect(() => {
     fetch(`${API}/cameras`)
       .then(r => r.json())
@@ -18,9 +20,16 @@ function App() {
       .catch(() => setLoadError('⚠ Could not reach backend. Is uvicorn running?'));
   }, []);
 
+  const tabs = [
+    { id: 'manage',    icon: '⚙️',  label: 'Camera Management', count: cameras.length },
+    { id: 'monitor',   icon: '📹',  label: 'Live Monitoring',   count: cameras.length },
+    { id: 'workers',   icon: '👷',  label: 'Workers',           count: null },
+    { id: 'scanner',   icon: '📱',  label: 'QR Scanner',        count: null },
+  ];
+
   return (
     <div className="app-shell">
-      {/* ── Header ── */}
+      {/* Header */}
       <header className="app-header">
         <div className="header-logo">
           <div className="header-logo-icon">🛡</div>
@@ -30,32 +39,26 @@ function App() {
         <span className="header-badge">● System Online</span>
       </header>
 
-      {/* ── Tab Bar ── */}
+      {/* Tabs */}
       <nav className="tab-nav">
-        <button
-          id="tab-manage"
-          className={`tab-btn ${tab === 'manage' ? 'active' : ''}`}
-          onClick={() => setTab('manage')}
-        >
-          <span className="tab-icon">⚙️</span>
-          Camera Management
-          <span className="tab-count">{cameras.length}</span>
-        </button>
-        <button
-          id="tab-monitor"
-          className={`tab-btn ${tab === 'monitor' ? 'active' : ''}`}
-          onClick={() => setTab('monitor')}
-        >
-          <span className="tab-icon">📹</span>
-          Live Monitoring
-          <span className="tab-count">{cameras.length}</span>
-        </button>
+        {tabs.map(t => (
+          <button
+            key={t.id}
+            id={`tab-${t.id}`}
+            className={`tab-btn ${tab === t.id ? 'active' : ''}`}
+            onClick={() => setTab(t.id)}
+          >
+            <span className="tab-icon">{t.icon}</span>
+            {t.label}
+            {t.count !== null && <span className="tab-count">{t.count}</span>}
+          </button>
+        ))}
       </nav>
 
-      {/* ── Page Content ── */}
+      {/* Content */}
       <main className="page-content">
         {loadError && (
-          <div style={{ color: 'var(--danger)', marginBottom: '20px', fontSize: '14px' }}>{loadError}</div>
+          <div style={{ color: 'var(--danger)', marginBottom: 20, fontSize: 14 }}>{loadError}</div>
         )}
 
         {tab === 'manage' && (
@@ -69,10 +72,9 @@ function App() {
               <p className="section-subtitle">
                 {cameras.length === 0
                   ? 'No cameras found. Add cameras in the Camera Management tab.'
-                  : `${cameras.length} camera${cameras.length > 1 ? 's' : ''} available. Press Start on any feed to begin AI analysis.`}
+                  : `${cameras.length} camera${cameras.length > 1 ? 's' : ''} available. Press Start to begin AI analysis.`}
               </p>
             </div>
-
             {cameras.length === 0 ? (
               <div className="glass-card">
                 <div className="empty-state">
@@ -83,13 +85,17 @@ function App() {
               </div>
             ) : (
               <div className="monitor-grid">
-                {cameras.map((cam) => (
+                {cameras.map(cam => (
                   <CameraStream key={cam._id} camera={cam} />
                 ))}
               </div>
             )}
           </div>
         )}
+
+        {tab === 'workers' && <WorkerManagement />}
+
+        {tab === 'scanner' && <AttendanceScanner />}
       </main>
     </div>
   );

@@ -15,3 +15,9 @@ def get_db():
 
 def get_camera_collection():
     return get_db()["cameras"]
+
+def get_worker_collection():
+    return get_db()["workers"]
+
+def get_attendance_collection():
+    return get_db()["attendances"]
