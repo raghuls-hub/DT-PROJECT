@@ -6,3 +6,5 @@ numpy
 ultralytics
 onnx
 onnxruntime-gpu
+motor
+python-dotenv

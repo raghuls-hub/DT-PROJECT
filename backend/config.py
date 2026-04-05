@@ -1,4 +1,11 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()  # Loads .env file
+
+# ── MongoDB Atlas ──
+MONGODB_URI = os.getenv("MONGODB_URI", "mongodb://localhost:27017")
+MONGODB_DB  = "smart_safety_system"
 
 AVAILABLE_PPE_OPTIONS = [
     "helmet", "person", "safety_vest", "machinery", "mask", 
