@@ -138,9 +138,14 @@ class PPEService:
 
         for det in detections:
             if det.class_name not in allowed:
+                # Debug logging to catch naming mismatches
+                print(f"[Draw Debug] Skipping '{det.class_name}' because it's not in allowed: {list(allowed)[:3]}...")
                 continue
 
             x1, y1, x2, y2 = det.bbox
+            # Final verification of coordinates
+            print(f"[Draw Debug] Drawing '{det.class_name}' at {det.bbox} on frame {frame.shape}")
+            
             label = f"{det.class_name} {det.confidence:.0%}"
             color = (
                 self.NEGATIVE_COLOR

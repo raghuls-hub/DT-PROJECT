@@ -10,9 +10,21 @@ import sys
 import os
 
 from models.ppe_service import PPEService
+from models.fire_service import FireService
+from models.fall_service import FallService
 
-# Initialize AI Service globally as a Singleton so we don't reload the Heavy ONNX model uniquely per camera thread
-PPE_SERVICE_SINGLETON = PPEService(r"d:\Antigravity\DT-Project\models\PPE_detection.onnx")
+# Global Lock to prevent multiple threads from competing for 'os.environ'
+# when some cameras are local (no headers) and others are remote (ngrok bypass headers)
+ENV_LOCK = threading.Lock()
+
+# FREEZING PPE AS REQUESTED
+# PPE_SERVICE_SINGLETON = PPEService(r"d:\Antigravity\DT-Project\models\ppe-raghul-full.onnx")
+
+# UNFREEZING FIRE MODEL
+FIRE_SERVICE_SINGLETON = FireService(r"d:\Antigravity\DT-Project\models\fire_detection.onnx")
+
+# INITIALIZING FALL MODEL
+FALL_SERVICE_SINGLETON = FallService(r"d:\Antigravity\DT-Project\models\fall_detection.onnx")
 
 class NetworkCameraTrack(VideoStreamTrack):
     """
@@ -26,8 +38,11 @@ class NetworkCameraTrack(VideoStreamTrack):
         # Maxsize=1 is CRITICAL for low-latency. It prevents buffering old frames.
         self.Q = queue.Queue(maxsize=1)
         self.stopped = False
-        self.current_inference_frame = None
+        self.current_inference_frame = None   # BGR frame for AI models
         self.latest_detections = []
+        self.latest_fire_detections = []
+        self.latest_fall_detections = []
+        self.ai_frame_counter = 0
         
         # Start isolated ingestion thread
         self.thread = threading.Thread(target=self._ingest_video, daemon=True)
@@ -41,15 +56,42 @@ class NetworkCameraTrack(VideoStreamTrack):
         """Background daemon thread to fetch video continuously."""
         print(f"[Thread-Start] Ingesting video from: {self.camera_url}")
         
-        # FIX FOR NGROK & SSL ISSUES:
-        # 1. 'tls_verify;0' bypasses strict SSL handshake errors on Windows.
-        # 2. 'headers;ngrok-skip-browser-warning: true' bypasses the free ngrok HTML warning tier.
-        import os
-        os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "tls_verify;0|headers;ngrok-skip-browser-warning: true"
+        # ── LOCAL PATH RESOLUTION ──
+        # Resolves Flask URLs back to direct files to bypass HTTP handshake issues on Windows
+        final_url = self.camera_url
+        is_local_file = False
+        
+        if "5000/stream/" in self.camera_url:
+            filename = self.camera_url.split("/stream/")[-1].replace("%20", " ")
+            potential_file = os.path.join(r"d:\Antigravity\DT - PPE\videos", filename)
+            if os.path.exists(potential_file):
+                print(f"[StreamManager] URL Resolved to direct path: {potential_file}")
+                final_url = potential_file
+                is_local_file = True
+
+        # TWO-WAY ACCEPTANCE LOGIC (Local vs IP Camera/Ngrok)
+        is_local_conn = any(x in self.camera_url for x in ["localhost", "127.0.0.1", "::1"])
         
         # Auto-reconnection loop keeps attempting to reconnect if the stream drops
         while not self.stopped:
-            cap = cv2.VideoCapture(self.camera_url, cv2.CAP_FFMPEG)
+            # 1. Prepare environment for this specific connection
+            with ENV_LOCK:
+                if is_local_conn or is_local_file:
+                    if "OPENCV_FFMPEG_CAPTURE_OPTIONS" in os.environ:
+                        del os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"]
+                else:
+                    os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = "tls_verify;0|headers;ngrok-skip-browser-warning: true"
+                
+                # 2. Use CAP_FFMPEG only for network URLs (files work natively)
+                if is_local_file:
+                    cap = cv2.VideoCapture(final_url)
+                else:
+                    cap = cv2.VideoCapture(final_url, cv2.CAP_FFMPEG)
+            
+            # 3. Fallback Mechanism
+            if not cap.isOpened():
+                print(f"[Warning] Backend open failed for {final_url}. Attempting final OS fallback...")
+                cap = cv2.VideoCapture(final_url)
             
             # Force high-definition capture (crucial if using physical webcams or variable RTSP streams)
             # NOTE: Commented out natively because forcing hardware resolution on basic HTTP .mp4 streams 
@@ -79,8 +121,11 @@ class NetworkCameraTrack(VideoStreamTrack):
                 # Convert BGR (OpenCV) to RGB (WebRTC default)
                 frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
-                # Make a snapshot locally for the detached AI loop to work on 
-                self.current_inference_frame = frame_rgb.copy()
+                # ── CRITICAL ──
+                # Store the ORIGINAL BGR frame for AI inference.
+                # YOLO/ONNX models expect BGR (OpenCV native), NOT RGB.
+                # The RGB frame is only for the WebRTC pipeline.
+                self.current_inference_frame = frame.copy()  # BGR
                 
                 # Aggressive dropping mechanism (maxsize=1)
                 try:
@@ -104,26 +149,38 @@ class NetworkCameraTrack(VideoStreamTrack):
         print(f"[AI-Thread] GPU background execution started for {self.camera_url}")
         while not self.stopped:
             if self.current_inference_frame is not None:
+                self.ai_frame_counter += 1
+                
                 # ── START AI CASCADE OPTIMIZATION ──
-                # 1. Grab snapshot and resize purely for AI speed
-                frame_snap = self.current_inference_frame.copy()
+                # IMPORTANT: Do NOT pre-resize frames before passing to YOLO.
+                # YOLO internally applies letterbox resizing — pre-squashing to 640x640
+                # distorts aspect ratio and significantly hurts detection accuracy.
+                # Let YOLO manage all preprocessing natively.
+                frame_snap = self.current_inference_frame.copy()  # Original BGR, full resolution
                 h, w = frame_snap.shape[:2]
-                target_w, target_h = 1280, 720
-                resized_frame = cv2.resize(frame_snap, (target_w, target_h))
                 
-                # 2. Synchronous GPU execution! (But it's detached, so video stream won't pause)
-                detections = PPE_SERVICE_SINGLETON.detect_ppe(resized_frame)
+                # 2. Fall detection on every AI frame
+                fall_detections = FALL_SERVICE_SINGLETON.detect_fall(frame_snap)
                 
-                # 3. Upscale bounding coordinates heavily
-                if detections:
-                    scale_x = w / target_w
-                    scale_y = h / target_h
-                    for det in detections:
-                        x1, y1, x2, y2 = det.bbox
-                        det.bbox = (int(x1 * scale_x), int(y1 * scale_y), int(x2 * scale_x), int(y2 * scale_y))
+                if fall_detections:
+                    print(f"[Fall AI] {self.camera_url}: Detected {len(fall_detections)} → {[d.class_name for d in fall_detections]}")
                 
-                # Update global bindings over the class securely
-                self.latest_detections = detections
+                self.latest_fall_detections = fall_detections
+                
+                # 3. Fire Model (every frame - same as fall detection)
+                fire_detections = FIRE_SERVICE_SINGLETON.detect_fire(frame_snap)
+                
+                if fire_detections:
+                    print(f"[Fire AI] {self.camera_url}: Detected {len(fire_detections)} → {[d.class_name for d in fire_detections]}")
+                        
+                self.latest_fire_detections = fire_detections
+                
+                # Update global bindings securely
+                # self.latest_detections = ppe_detections
+                
+                # Anti-overflow catch
+                if self.ai_frame_counter > 15000:
+                    self.ai_frame_counter = 0
                 
                 # Minor GPU relaxer
                 time.sleep(0.01)
@@ -143,8 +200,14 @@ class NetworkCameraTrack(VideoStreamTrack):
             frame_rgb = self.Q.get_nowait()
             
             # Draw any available decoupled AI boxes instantaneously without processing lag
-            if self.latest_detections:
-                PPE_SERVICE_SINGLETON.draw_ppe_boxes(frame_rgb, self.latest_detections)
+            if self.latest_fall_detections:
+                FALL_SERVICE_SINGLETON.draw_fall_boxes(frame_rgb, self.latest_fall_detections)
+                
+            # Fire detection inherently caches on the other frames natively
+            FIRE_SERVICE_SINGLETON.annotate_frame(frame_rgb, self.latest_fire_detections)
+            
+            # PPE is STILL FROZEN
+            # PPE_SERVICE_SINGLETON.draw_ppe_boxes(frame_rgb, self.latest_detections)
             
             # Create a PyAV VideoFrame required by aiortc
             pts, time_base = await self.next_timestamp()
