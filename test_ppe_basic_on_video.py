@@ -9,8 +9,8 @@ from models.ppe_service import PPEService
 from config import MONITORED_PPE_TYPES
 
 # 1. SETUP
-MODEL_PATH = r"d:\Antigravity\DT-Project\models\basic-model.onnx"
-INPUT_VIDEO = r"C:\Users\M RAGHUL\Videos\Screen Recordings\Screen Recording 2026-03-17 092333.mp4"
+MODEL_PATH = os.path.join("models", "basic-model.onnx")
+INPUT_VIDEO = os.path.join("videos", "input.mp4")
 OUTPUT_VIDEO = "output_test_ppe_basic.mp4"
 
 print(f"👷 Initializing PPEService (Basic) with model: {MODEL_PATH}")

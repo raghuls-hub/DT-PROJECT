@@ -8,8 +8,8 @@ sys.path.append(os.path.join(os.getcwd(), "backend"))
 from models.fall_service import FallService
 
 # 1. SETUP
-MODEL_PATH = r"d:\Antigravity\DT-Project\models\fall_detection.onnx"
-INPUT_VIDEO = r"d:\Antigravity\DT - PPE\videos\input.mp4"
+MODEL_PATH = os.path.join("models", "fall_detection.onnx")
+INPUT_VIDEO = os.path.join("videos", "input.mp4")
 OUTPUT_VIDEO = "output_test_fall.mp4"
 
 print(f"🦴 Initializing Fall Service with model: {MODEL_PATH}")

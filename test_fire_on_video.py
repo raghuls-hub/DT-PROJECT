@@ -9,8 +9,8 @@ sys.path.append(os.path.join(os.getcwd(), "backend"))
 from models.fire_service import FireService
 
 # 1. SETUP
-MODEL_PATH = r"d:\Antigravity\DT-Project\models\fire_detection.onnx"
-INPUT_VIDEO = r"d:\Antigravity\DT - PPE\videos\fall.mp4" # Re-use fall.mp4 or point to a fire-specific video
+MODEL_PATH = os.path.join("models", "fire_detection.onnx")
+INPUT_VIDEO = os.path.join("videos", "input.mp4")
 OUTPUT_VIDEO = "output_test_fire.mp4"
 
 print(f"🔥 Initializing Fire Service with model: {MODEL_PATH}")

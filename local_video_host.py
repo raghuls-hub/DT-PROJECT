@@ -4,7 +4,7 @@ from flask import Flask, send_from_directory
 app = Flask(__name__)
 
 # 1. Input: Path of the folder containing your videos
-VIDEO_FOLDER = r"d:\Antigravity\DT-Project\videos"
+VIDEO_FOLDER = os.path.join(os.path.dirname(os.path.abspath(__file__)), "videos")
 PORT = 5000
 
 # Route A: The actual video file streamer

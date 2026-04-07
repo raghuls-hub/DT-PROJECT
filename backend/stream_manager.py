@@ -17,14 +17,17 @@ from models.fall_service import FallService
 # when some cameras are local (no headers) and others are remote (ngrok bypass headers)
 ENV_LOCK = threading.Lock()
 
+# Define root directory relative to this file
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+
 # INITIALIZING PPE MODEL
-PPE_SERVICE_SINGLETON = PPEService(r"d:\Antigravity\DT-Project\models\basic-model.onnx")
+PPE_SERVICE_SINGLETON = PPEService(os.path.join(ROOT_DIR, "models", "basic-model.onnx"))
 
 # UNFREEZING FIRE MODEL
-FIRE_SERVICE_SINGLETON = FireService(r"d:\Antigravity\DT-Project\models\fire_detection.onnx")
+FIRE_SERVICE_SINGLETON = FireService(os.path.join(ROOT_DIR, "models", "fire_detection.onnx"))
 
 # INITIALIZING FALL MODEL
-FALL_SERVICE_SINGLETON = FallService(r"d:\Antigravity\DT-Project\models\fall_detection.onnx")
+FALL_SERVICE_SINGLETON = FallService(os.path.join(ROOT_DIR, "models", "fall_detection.onnx"))
 
 class NetworkCameraTrack(VideoStreamTrack):
     """
@@ -65,7 +68,7 @@ class NetworkCameraTrack(VideoStreamTrack):
         
         if "5000/stream/" in self.camera_url:
             filename = self.camera_url.split("/stream/")[-1].replace("%20", " ")
-            potential_file = os.path.join(r"d:\Antigravity\DT - PPE\videos", filename)
+            potential_file = os.path.join(ROOT_DIR, "videos", filename)
             if os.path.exists(potential_file):
                 print(f"[StreamManager] URL Resolved to direct path: {potential_file}")
                 final_url = potential_file
