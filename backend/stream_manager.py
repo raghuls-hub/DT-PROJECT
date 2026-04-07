@@ -17,8 +17,8 @@ from models.fall_service import FallService
 # when some cameras are local (no headers) and others are remote (ngrok bypass headers)
 ENV_LOCK = threading.Lock()
 
-# FREEZING PPE AS REQUESTED
-# PPE_SERVICE_SINGLETON = PPEService(r"d:\Antigravity\DT-Project\models\ppe-raghul-full.onnx")
+# INITIALIZING PPE MODEL
+PPE_SERVICE_SINGLETON = PPEService(r"d:\Antigravity\DT-Project\models\basic-model.onnx")
 
 # UNFREEZING FIRE MODEL
 FIRE_SERVICE_SINGLETON = FireService(r"d:\Antigravity\DT-Project\models\fire_detection.onnx")
@@ -39,9 +39,11 @@ class NetworkCameraTrack(VideoStreamTrack):
         self.Q = queue.Queue(maxsize=1)
         self.stopped = False
         self.current_inference_frame = None   # BGR frame for AI models
-        self.latest_detections = []
+        self.latest_raw_ppe_detections = []
+        self.latest_ppe_statuses = []
         self.latest_fire_detections = []
         self.latest_fall_detections = []
+        self.monitored_ppe = []  # Selection from frontend
         self.ai_frame_counter = 0
         
         # Start isolated ingestion thread
@@ -147,16 +149,21 @@ class NetworkCameraTrack(VideoStreamTrack):
     def _ai_inference_loop(self):
         """Detached Daemon thread constantly churning AI frames seamlessly in the background!"""
         print(f"[AI-Thread] GPU background execution started for {self.camera_url}")
+        
+        # Frame-grabbing architecture: ensure we process a range of models efficiently
+        processed_count = 0
+        
         while not self.stopped:
             if self.current_inference_frame is not None:
-                self.ai_frame_counter += 1
+                processed_count += 1
                 
-                # ── START AI CASCADE OPTIMIZATION ──
-                # IMPORTANT: Do NOT pre-resize frames before passing to YOLO.
-                # YOLO internally applies letterbox resizing — pre-squashing to 640x640
-                # distorts aspect ratio and significantly hurts detection accuracy.
-                # Let YOLO manage all preprocessing natively.
-                frame_snap = self.current_inference_frame.copy()  # Original BGR, full resolution
+                # OPTIMIZATION: Follow project architecture for model frame grabbing, 
+                # but implement a frame-skip to avoid redundant processing.
+                if processed_count % 3 != 1:  # Run AI on 1 out of every 3 frames grabbed
+                    time.sleep(0.01)
+                    continue
+
+                frame_snap = self.current_inference_frame.copy()
                 h, w = frame_snap.shape[:2]
                 
                 # 2. Fall detection on every AI frame
@@ -167,16 +174,20 @@ class NetworkCameraTrack(VideoStreamTrack):
                 
                 self.latest_fall_detections = fall_detections
                 
-                # 3. Fire Model (every frame - same as fall detection)
+                # 3. Fire Model (every AI frame)
                 fire_detections = FIRE_SERVICE_SINGLETON.detect_fire(frame_snap)
-                
                 if fire_detections:
-                    print(f"[Fire AI] {self.camera_url}: Detected {len(fire_detections)} → {[d.class_name for d in fire_detections]}")
-                        
+                    print(f"[Fire AI] {self.camera_url}: Detected {len(fire_detections)}")
                 self.latest_fire_detections = fire_detections
+
+                # 4. PPE Model (Every AI frame)
+                # First get raw detections
+                raw_ppe = PPE_SERVICE_SINGLETON.detect_ppe(frame_snap)
+                # Then run person-centric logic with track-specific filtered list
+                ppe_statuses = PPE_SERVICE_SINGLETON.process_person_logic(raw_ppe, self.monitored_ppe)
                 
-                # Update global bindings securely
-                # self.latest_detections = ppe_detections
+                self.latest_raw_ppe_detections = raw_ppe
+                self.latest_ppe_statuses       = ppe_statuses
                 
                 # Anti-overflow catch
                 if self.ai_frame_counter > 15000:
@@ -206,8 +217,10 @@ class NetworkCameraTrack(VideoStreamTrack):
             # Fire detection inherently caches on the other frames natively
             FIRE_SERVICE_SINGLETON.annotate_frame(frame_rgb, self.latest_fire_detections)
             
-            # PPE is STILL FROZEN
-            # PPE_SERVICE_SINGLETON.draw_ppe_boxes(frame_rgb, self.latest_detections)
+            # PPE Detection Results
+            PPE_SERVICE_SINGLETON.draw_ppe_results(
+                frame_rgb, self.latest_ppe_statuses, self.latest_raw_ppe_detections
+            )
             
             # Create a PyAV VideoFrame required by aiortc
             pts, time_base = await self.next_timestamp()
@@ -236,15 +249,19 @@ class StreamManager:
     def __init__(self):
         self.active_tracks = {}
 
-    def get_or_create_track(self, camera_url: str) -> NetworkCameraTrack:
-        # Check if we already have an ongoing thread/track for this physical camera
+    def get_or_create_track(self, camera_url: str, monitored_ppe: list = None) -> NetworkCameraTrack:
         if camera_url in self.active_tracks:
-            print(f"[StreamManager] Reusing existing ingestion track for {camera_url}")
-            return self.active_tracks[camera_url]
+            print(f"[StreamManager] Reusing existing track for {camera_url}")
+            track = self.active_tracks[camera_url]
+            # Update monitoring preferences dynamically if provided
+            if monitored_ppe is not None:
+                track.monitored_ppe = monitored_ppe
+            return track
             
-        # Spawn NEW isolated background thread and queue
-        print(f"[StreamManager] Provisioning NEW Track & Thread for {camera_url}")
+        print(f"[StreamManager] Provisioning NEW Track for {camera_url}")
         track = NetworkCameraTrack(camera_url)
+        if monitored_ppe is not None:
+            track.monitored_ppe = monitored_ppe
         self.active_tracks[camera_url] = track
         return track
         

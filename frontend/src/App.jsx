@@ -12,6 +12,15 @@ function App() {
   const [tab, setTab]         = useState('manage');
   const [cameras, setCameras] = useState([]);
   const [loadError, setLoadError] = useState('');
+  
+  // PPE Monitoring Selection
+  const [monitoredPPE, setMonitoredPPE] = useState(['Hardhat', 'Mask', 'Safety Vest']);
+
+  const togglePPE = (item) => {
+    setMonitoredPPE(prev => 
+      prev.includes(item) ? prev.filter(i => i !== item) : [...prev, item]
+    );
+  };
 
   useEffect(() => {
     fetch(`${API}/cameras`)
@@ -75,6 +84,32 @@ function App() {
                   : `${cameras.length} camera${cameras.length > 1 ? 's' : ''} available. Press Start to begin AI analysis.`}
               </p>
             </div>
+
+            {/* PPE Selection Bar */}
+            {cameras.length > 0 && (
+              <div className="ppe-selection-bar" style={{ 
+                display: 'flex', gap: '20px', marginBottom: '20px', 
+                padding: '12px 20px', background: 'var(--card-bg)', 
+                borderRadius: '12px', border: '1px solid var(--border)',
+                alignItems: 'center'
+              }}>
+                <span style={{ fontWeight: '600', fontSize: '14px', color: 'var(--text-secondary)' }}>Monitoring Classes:</span>
+                {['Hardhat', 'Mask', 'Safety Vest'].map(item => (
+                  <label key={item} style={{ 
+                    display: 'flex', alignItems: 'center', gap: '8px', 
+                    cursor: 'pointer', fontSize: '14px', fontWeight: '500' 
+                  }}>
+                    <input 
+                      type="checkbox" 
+                      checked={monitoredPPE.includes(item)}
+                      onChange={() => togglePPE(item)}
+                      style={{ cursor: 'pointer' }}
+                    />
+                    {item}
+                  </label>
+                ))}
+              </div>
+            )}
             {cameras.length === 0 ? (
               <div className="glass-card">
                 <div className="empty-state">
@@ -86,7 +121,11 @@ function App() {
             ) : (
               <div className="monitor-grid">
                 {cameras.map(cam => (
-                  <CameraStream key={cam._id} camera={cam} />
+                  <CameraStream 
+                    key={cam._id} 
+                    camera={cam} 
+                    monitoredPPE={monitoredPPE} 
+                  />
                 ))}
               </div>
             )}

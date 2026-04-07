@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from pydantic import BaseModel
-from typing import Optional
+from typing import Optional, List
 from bson import ObjectId
 from dotenv import load_dotenv
 
@@ -82,6 +82,7 @@ class OfferRequest(BaseModel):
     sdp: str
     type: str
     camera_url: str
+    monitored_ppe: Optional[List[str]] = []
 
 class CameraIn(BaseModel):
     name: str
@@ -313,7 +314,10 @@ async def offer(params: OfferRequest):
         if pc.connectionState in ("failed", "closed"):
             pcs.discard(pc)
 
-    video_track = stream_factory.get_or_create_track(params.camera_url)
+    video_track = stream_factory.get_or_create_track(
+        params.camera_url, 
+        params.monitored_ppe
+    )
     pc.addTrack(video_track)
 
     await pc.setRemoteDescription(offer_sdp)

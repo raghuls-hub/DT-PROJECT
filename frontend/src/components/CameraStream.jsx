@@ -2,7 +2,7 @@ import React, { useEffect, useRef, useState } from 'react';
 
 const API = 'http://localhost:8000';
 
-const CameraStream = ({ camera, onDelete }) => {
+const CameraStream = ({ camera, monitoredPPE, onDelete }) => {
   const videoRef = useRef(null);
   const pcRef    = useRef(null);
   const [status, setStatus]   = useState('idle'); // idle | connecting | connected | error
@@ -40,6 +40,7 @@ const CameraStream = ({ camera, onDelete }) => {
           sdp: pc.localDescription.sdp,
           type: pc.localDescription.type,
           camera_url: camera.url,
+          monitored_ppe: monitoredPPE,
         }),
       });
 
