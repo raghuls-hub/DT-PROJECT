@@ -87,6 +87,7 @@ class OfferRequest(BaseModel):
 class CameraIn(BaseModel):
     name: str
     url: str
+    endpoint: Optional[str] = None  # Ntfy.sh endpoint for alerts
 
 class WorkerIn(BaseModel):
     name: str
@@ -118,10 +119,41 @@ async def list_cameras():
 @app.post("/cameras", status_code=201)
 async def add_camera(camera: CameraIn):
     col = get_camera_collection()
-    doc = {"name": camera.name, "url": camera.url}
+    doc = {
+        "name": camera.name, 
+        "url": camera.url,
+        "endpoint": camera.endpoint  # Store ntfy.sh endpoint
+    }
     result = await col.insert_one(doc)
     doc["_id"] = str(result.inserted_id)
     return doc
+
+@app.put("/cameras/{camera_id}")
+async def update_camera(camera_id: str, camera: CameraIn):
+    col = get_camera_collection()
+    try:
+        oid = ObjectId(camera_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid camera ID")
+    
+    existing = await col.find_one({"_id": oid})
+    if not existing:
+        raise HTTPException(status_code=404, detail="Camera not found")
+    
+    update_fields = {}
+    if camera.name is not None:
+        update_fields["name"] = camera.name.strip()
+    if camera.url is not None:
+        update_fields["url"] = camera.url.strip()
+    if camera.endpoint is not None:
+        update_fields["endpoint"] = camera.endpoint.strip() if camera.endpoint else None
+    
+    if not update_fields:
+        raise HTTPException(status_code=400, detail="No fields to update.")
+    
+    await col.update_one({"_id": oid}, {"$set": update_fields})
+    updated = await col.find_one({"_id": oid})
+    return _serialize(updated)
 
 @app.delete("/cameras/{camera_id}")
 async def delete_camera(camera_id: str):
@@ -314,9 +346,15 @@ async def offer(params: OfferRequest):
         if pc.connectionState in ("failed", "closed"):
             pcs.discard(pc)
 
+    # Get camera endpoint from database
+    camera_col = get_camera_collection()
+    camera_doc = await camera_col.find_one({"url": params.camera_url})
+    endpoint = camera_doc.get("endpoint") if camera_doc else None
+
     video_track = stream_factory.get_or_create_track(
         params.camera_url, 
-        params.monitored_ppe
+        params.monitored_ppe,
+        endpoint
     )
     pc.addTrack(video_track)
 

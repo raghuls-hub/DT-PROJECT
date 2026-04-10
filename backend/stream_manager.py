@@ -5,6 +5,7 @@ import time
 import asyncio
 import fractions
 import numpy as np
+import requests
 from typing import List
 from aiortc import VideoStreamTrack
 from av import VideoFrame
@@ -40,9 +41,11 @@ class NetworkCameraTrack(VideoStreamTrack):
     An isolated WebRTC VideoStreamTrack that consumes an external camera API.
     Runs its own background thread and `queue.Queue(maxsize=1)` for aggressive frame dropping.
     """
-    def __init__(self, camera_url: str):
+    def __init__(self, camera_url: str, endpoint: str = None):
         super().__init__()
         self.camera_url = camera_url
+        self.endpoint = endpoint  # Ntfy.sh endpoint for alerts
+        self.last_alert_time = 0  # Track last alert time for rate limiting
         
         # Maxsize=1 is CRITICAL for low-latency. It prevents buffering old frames.
         self.Q = queue.Queue(maxsize=1)
@@ -229,11 +232,20 @@ class NetworkCameraTrack(VideoStreamTrack):
                     if self.ppe_violation_start_time is None:
                         self.ppe_violation_start_time = now
                     elif now - self.ppe_violation_start_time >= 5.0:
+                        if not self.confirmed_ppe:  # Only send notification when first confirmed
+                            self._send_alert_notification("PPE VIOLATION DETECTED - SAFETY GEAR MISSING")
                         self.confirmed_ppe = True
                 else:
                     self.ppe_violation_start_time = None
                     if now - self.ppe_violation_last_seen > 3.0:
                         self.confirmed_ppe = False
+                
+                # Send notifications for newly confirmed alerts
+                if self.confirmed_fire and self.fire_start_time and now - self.fire_start_time <= 2.1:  # Just confirmed
+                    self._send_alert_notification("FIRE DETECTED - EVACUATE IMMEDIATELY")
+                    
+                if self.confirmed_fall and self.fall_frame_acc == 10:  # Just reached confirmation threshold
+                    self._send_alert_notification("FALL DETECTED - ASSISTANCE REQUIRED")
                 
                 if self.ai_frame_counter > 15000:
                     self.ai_frame_counter = 0
@@ -327,6 +339,30 @@ class NetworkCameraTrack(VideoStreamTrack):
         cv2.rectangle(border, (0, 0), (w, h), alert_color, 8)
         cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
 
+    def _send_alert_notification(self, alert_message: str) -> None:
+        """Send alert notification to ntfy.sh with rate limiting (2 minutes between alerts)."""
+        if not self.endpoint:
+            return  # No endpoint configured for this camera
+            
+        current_time = time.time()
+        
+        # Rate limiting: only send alert if 2 minutes (120 seconds) have passed since last alert
+        if current_time - self.last_alert_time < 120:
+            return
+            
+        try:
+            url = f"https://ntfy.sh/{self.endpoint}"
+            response = requests.post(url, data=alert_message.encode(encoding='utf-8'), timeout=5)
+            
+            if response.status_code == 200:
+                self.last_alert_time = current_time
+                print(f"[ALERT] Sent notification to {url}: {alert_message}")
+            else:
+                print(f"[ALERT] Failed to send notification to {url}: HTTP {response.status_code}")
+                
+        except Exception as e:
+            print(f"[ALERT] Error sending notification to {self.endpoint}: {e}")
+
 
 class StreamManager:
     """
@@ -336,7 +372,7 @@ class StreamManager:
     def __init__(self):
         self.active_tracks = {}
 
-    def get_or_create_track(self, camera_url: str, monitored_ppe: list = None) -> NetworkCameraTrack:
+    def get_or_create_track(self, camera_url: str, monitored_ppe: list = None, endpoint: str = None) -> NetworkCameraTrack:
         if camera_url in self.active_tracks:
             track = self.active_tracks[camera_url]
             if track.stopped:
@@ -346,10 +382,12 @@ class StreamManager:
                 print(f"[StreamManager] Reusing existing track for {camera_url}")
                 if monitored_ppe is not None:
                     track.monitored_ppe = monitored_ppe
+                if endpoint is not None:
+                    track.endpoint = endpoint
                 return track
             
         print(f"[StreamManager] Provisioning NEW Track for {camera_url}")
-        track = NetworkCameraTrack(camera_url)
+        track = NetworkCameraTrack(camera_url, endpoint)
         if monitored_ppe is not None:
             track.monitored_ppe = monitored_ppe
         self.active_tracks[camera_url] = track
