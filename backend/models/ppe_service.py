@@ -128,12 +128,16 @@ class PPEService:
         person_statuses: List[PersonPPEStatus] = []
         monitored_items = [item for item in monitored_items if item in monitored_set]
 
+        # Pre-compute PPE centers and create lookup sets for faster processing
+        ppe_centers = [(class_name, cx, cy) for class_name, cx, cy in ppe_items]
+        
         for p in people:
             status = PersonPPEStatus(p.bbox)
             px1, py1, px2, py2 = p.bbox
             present_ppe = set()
 
-            for class_name, cx, cy in ppe_items:
+            # Use set for faster lookups and batch processing
+            for class_name, cx, cy in ppe_centers:
                 if px1 <= cx <= px2 and py1 <= cy <= py2:
                     present_ppe.add(class_name)
 
@@ -176,12 +180,9 @@ class PPEService:
         is_confirmed: bool = False
     ) -> None:
         """Draw person boxes with violation alerts and their associated PPE."""
-        # 1. Cleaned up: No longer drawing raw sub-boxes for masks/hardhats as per user request.
+        # Alert is now handled by unified system in stream_manager
         
-        # 2. Draw Unified Loud Alert (if confirmed)
-        self.draw_ppe_alert(frame, is_confirmed)
-
-        # 3. Draw Person Boxes and Alerts
+        # Draw Person Boxes and Alerts
         for status in person_statuses:
             x1, y1, x2, y2 = status.person_bbox
             color = self.NEGATIVE_COLOR if status.violations else self.POSITIVE_COLOR

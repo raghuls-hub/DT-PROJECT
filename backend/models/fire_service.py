@@ -134,4 +134,4 @@ class FireService:
 
     def annotate_frame(self, frame: np.ndarray, detections: List[FireDetection], is_confirmed: bool = False) -> None:
         self.draw_fire_boxes(frame, detections)
-        self.draw_fire_alert(frame, detections, is_confirmed)
+        # Alert is now handled by unified system in stream_manager

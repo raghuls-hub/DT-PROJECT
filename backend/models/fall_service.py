@@ -95,23 +95,20 @@ class FallService:
         cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
 
     def draw_fall_boxes(self, frame: np.ndarray, detections: List[FallDetection], is_confirmed: bool = False) -> None:
-        # We now draw the boxes immediately for visual feedback, 
-        # but confirmed status can still be used for other alert logic.
+        # Draw boxes only for fallen class to improve performance
+        # Alert is now handled by unified system in stream_manager
         
-        # Draw Unified Loud Alert (only if confirmed)
-        self.draw_fall_alert(frame, is_confirmed)
-
         for det in detections:
-            # Only draw for the "fallen" class as per user request
+            # Only draw bounding boxes for the "fallen" class
             if det.class_name.lower() != "fallen":
                 continue
-
+                
             x1, y1, x2, y2 = det.bbox
-            color = (255, 0, 0) # Red (RGB) for violation/fall
-            label = f"FALL DETECTED {det.confidence:.0%}"
+            color = (255, 0, 0)  # Red for fallen detections
+            label = f"FALLEN {det.confidence:.0%}"
             
             # Draw Box
-            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)  # Thicker box for fallen
             
             # Draw Label Background
             (tw, th), _ = cv2.getTextSize(label, self.FONT, 0.6, 2)

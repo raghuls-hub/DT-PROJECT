@@ -4,8 +4,13 @@ import queue
 import time
 import asyncio
 import fractions
+import numpy as np
+from typing import List
 from aiortc import VideoStreamTrack
 from av import VideoFrame
+
+import numpy as np
+from typing import List
 
 import sys
 import os
@@ -177,38 +182,37 @@ class NetworkCameraTrack(VideoStreamTrack):
             if self.current_inference_frame is not None:
                 processed_count += 1
                 
-                # OPTIMIZATION: Run AI on 1 out of every 3 captured frames.
-                if processed_count % 3 != 1:
-                    time.sleep(0.01)
-                    continue
-
                 frame_snap = self.current_inference_frame.copy()
                 
-                fall_detections = FALL_SERVICE_SINGLETON.detect_fall(frame_snap)
-                self.latest_fall_detections = fall_detections
+                # Run PPE detection on every 2nd frame for balanced performance and tracking
+                if processed_count % 2 == 1:
+                    raw_ppe = PPE_SERVICE_SINGLETON.detect_ppe(frame_snap)
+                    ppe_statuses = PPE_SERVICE_SINGLETON.process_person_logic(raw_ppe, self.monitored_ppe)
+                    self.latest_raw_ppe_detections = raw_ppe
+                    self.latest_ppe_statuses = ppe_statuses
+                
+                # Run fall and fire detection on 1 out of every 3 frames for performance
+                if processed_count % 3 == 1:
+                    fall_detections = FALL_SERVICE_SINGLETON.detect_fall(frame_snap)
+                    self.latest_fall_detections = fall_detections
 
-                fire_detections = FIRE_SERVICE_SINGLETON.detect_fire(frame_snap)
-                self.latest_fire_detections = fire_detections
-
-                raw_ppe = PPE_SERVICE_SINGLETON.detect_ppe(frame_snap)
-                ppe_statuses = PPE_SERVICE_SINGLETON.process_person_logic(raw_ppe, self.monitored_ppe)
-                self.latest_raw_ppe_detections = raw_ppe
-                self.latest_ppe_statuses = ppe_statuses
+                    fire_detections = FIRE_SERVICE_SINGLETON.detect_fire(frame_snap)
+                    self.latest_fire_detections = fire_detections
 
                 now = time.time()
 
-                if FIRE_SERVICE_SINGLETON.has_fire(fire_detections):
+                if FIRE_SERVICE_SINGLETON.has_fire(self.latest_fire_detections):
                     self.fire_last_seen = now
                     if self.fire_start_time is None:
                         self.fire_start_time = now
-                    elif now - self.fire_start_time >= 4.0:
+                    elif now - self.fire_start_time >= 2.0:  # Reduced from 4.0 to 2.0 seconds
                         self.confirmed_fire = True
                 else:
                     self.fire_start_time = None
-                    if now - self.fire_last_seen > 3.0:
+                    if now - self.fire_last_seen > 2.0:  # Reduced from 3.0 to 2.0 seconds
                         self.confirmed_fire = False
 
-                has_fallen = any(d.class_name.lower() == "fallen" for d in fall_detections)
+                has_fallen = any(d.class_name.lower() == "fallen" for d in self.latest_fall_detections)
                 if has_fallen:
                     self.fall_last_seen = now
                     self.fall_frame_acc += 1
@@ -249,8 +253,27 @@ class NetworkCameraTrack(VideoStreamTrack):
         try:
             frame_rgb = self.Q.get_nowait()
 
+            # Draw alerts for all active detections
+            active_alerts = []
+            
+            # Check for fall alerts (show immediately when detected)
+            if self.latest_fall_detections and any(d.class_name.lower() == "fallen" for d in self.latest_fall_detections):
+                active_alerts.append("FALL DETECTED - ASSISTANCE REQUIRED")
+            
+            # Check for fire alerts (only when confirmed)
+            if self.confirmed_fire:
+                active_alerts.append("FIRE DETECTED - EVACUATE IMMEDIATELY")
+            
+            # Check for PPE alerts (only when confirmed)
+            if self.confirmed_ppe:
+                active_alerts.append("PPE VIOLATION DETECTED - SAFETY GEAR MISSING")
+            
+            # Draw unified alert bar if any alerts are active
+            if active_alerts:
+                self._draw_unified_alert(frame_rgb, active_alerts)
+
             if self.latest_fall_detections:
-                FALL_SERVICE_SINGLETON.draw_fall_boxes(frame_rgb, self.latest_fall_detections, self.confirmed_fall)
+                FALL_SERVICE_SINGLETON.draw_fall_boxes(frame_rgb, self.latest_fall_detections, False)  # Don't draw alert here
 
             FIRE_SERVICE_SINGLETON.annotate_frame(frame_rgb, self.latest_fire_detections, self.confirmed_fire)
 
@@ -273,11 +296,36 @@ class NetworkCameraTrack(VideoStreamTrack):
             await asyncio.sleep(0.01)
             return await self.recv()
 
-    def stop(self):
-        """Tears down the isolated stream."""
-        self.stopped = True
-        self.thread.join(timeout=1.0)
-        print(f"[Thread-Stop] Camera isolated thread terminated: {self.camera_url}")
+    def _draw_unified_alert(self, frame: np.ndarray, alerts: List[str]) -> None:
+        """Draw a unified alert bar showing multiple active alerts."""
+        if not alerts:
+            return
+
+        h, w = frame.shape[:2]
+        bar_h = 60  # Increased height for multiple alerts
+        alert_color = (255, 0, 0)  # RGB Red
+        
+        # Create blinking effect
+        if int(time.time() * 2) % 2 == 0:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, h - bar_h), (w, h), alert_color, -1)
+            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+            
+            # Draw each alert on a separate line
+            font_scale = 0.55
+            line_height = 18
+            start_y = h - bar_h + 20
+            
+            for i, alert_text in enumerate(alerts):
+                (tw, th), _ = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, 1)
+                tx = max(10, (w - tw) // 2)
+                ty = start_y + (i * line_height)
+                cv2.putText(frame, alert_text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, font_scale, (255, 255, 255), 1)
+
+        # Draw red border
+        border = frame.copy()
+        cv2.rectangle(border, (0, 0), (w, h), alert_color, 8)
+        cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
 
 
 class StreamManager:
