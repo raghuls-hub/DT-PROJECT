@@ -8,3 +8,4 @@ onnx
 onnxruntime-gpu
 motor
 python-dotenv
+qrcode

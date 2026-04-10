@@ -1,4 +1,5 @@
 import cv2
+import time
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 from ultralytics import YOLO
@@ -48,8 +49,8 @@ class PPEService:
     Implements Person-centric logic: Detect Person -> Check PPE on Person.
     """
 
-    POSITIVE_COLOR = (0, 200, 0)        # Green  — PPE present
-    NEGATIVE_COLOR = (0, 0, 255)        # Red    — PPE missing / violation
+    POSITIVE_COLOR = (0, 200, 0)        # Green (RGB)
+    NEGATIVE_COLOR = (255, 0, 0)        # Red (RGB)
     LABEL_COLOR    = (255, 255, 255)    # White
     FONT           = cv2.FONT_HERSHEY_SIMPLEX
 
@@ -62,13 +63,16 @@ class PPEService:
         self.confidence_threshold = confidence_threshold
         self.iou_threshold        = iou_threshold
 
-        print(f"[PPEService] Loading basic model: {model_path}")
+        self.device = 'cpu'
+        print(f"[PPEService] Loading basic model on CPU: {model_path}")
+
         self.model = YOLO(model_path, task='detect')
 
         # Warm-up pass
         print("[PPEService] Running warm-up pass...")
         dummy = np.zeros((360, 640, 3), dtype=np.uint8)
-        self.model.predict(dummy, verbose=False)
+        self.model.predict(dummy, verbose=False, device=self.device)
+
         print("[PPEService] Model ready.")
 
     def detect_ppe(self, frame: np.ndarray) -> List[PPEDetection]:
@@ -79,7 +83,9 @@ class PPEService:
                 conf=self.confidence_threshold,
                 iou=self.iou_threshold,
                 verbose=False,
+                device=self.device
             )
+
             detections: List[PPEDetection] = []
             for r in results:
                 if r.boxes is None:
@@ -100,56 +106,82 @@ class PPEService:
             return []
 
     def process_person_logic(
-        self, 
-        detections: List[PPEDetection], 
-        monitored_items: List[str] = MONITORED_PPE_TYPES
+        self,
+        detections: List[PPEDetection],
+        monitored_items: List[str] = MONITORED_PPE_TYPES,
     ) -> List[PersonPPEStatus]:
         """Group PPE detections by person and identify violations."""
-        people = [d for d in detections if d.class_name == "Person"]
-        ppe_items = [d for d in detections if d.class_name in monitored_items]
-        
+        monitored_set = set(monitored_items)
+        people: List[PPEDetection] = []
+        ppe_items: List[tuple[str, float, float]] = []
+
+        for det in detections:
+            if det.class_name == "Person":
+                people.append(det)
+            elif det.class_name in monitored_set:
+                x1, y1, x2, y2 = det.bbox
+                ppe_items.append((det.class_name, (x1 + x2) * 0.5, (y1 + y2) * 0.5))
+
+        if not people:
+            return []
+
         person_statuses: List[PersonPPEStatus] = []
+        monitored_items = [item for item in monitored_items if item in monitored_set]
 
         for p in people:
             status = PersonPPEStatus(p.bbox)
             px1, py1, px2, py2 = p.bbox
+            present_ppe = set()
 
-            # Find PPE associated with this person
-            for ppe in ppe_items:
-                # Check if PPE center is inside person box
-                inner_x = (ppe.bbox[0] + ppe.bbox[2]) / 2
-                inner_y = (ppe.bbox[1] + ppe.bbox[3]) / 2
-                
-                if px1 <= inner_x <= px2 and py1 <= inner_y <= py2:
-                    if ppe.class_name not in status.present_ppe:
-                        status.present_ppe.append(ppe.class_name)
+            for class_name, cx, cy in ppe_items:
+                if px1 <= cx <= px2 and py1 <= cy <= py2:
+                    present_ppe.add(class_name)
 
-            # Check for missing items
-            for item in monitored_items:
-                if item not in status.present_ppe:
-                    status.missing_ppe.append(item)
-            
-            status.violations = len(status.missing_ppe) > 0
+            status.present_ppe = sorted(present_ppe)
+            status.missing_ppe = [item for item in monitored_items if item not in present_ppe]
+            status.violations = bool(status.missing_ppe)
             person_statuses.append(status)
 
         return person_statuses
+
+    def draw_ppe_alert(self, frame: np.ndarray, is_confirmed: bool = False) -> None:
+        if not is_confirmed:
+            return
+
+        h, w = frame.shape[:2]
+        bar_h = 48
+        alert_text = "PPE VIOLATION DETECTED - SAFETY GEAR MISSING"
+        alert_color = (255, 0, 0) # RGB Red
+
+        # 1. Alert Bar (Bottom)
+        if int(time.time() * 2) % 2 == 0:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, h - bar_h), (w, h), alert_color, -1)
+            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+            
+            (tw, th), _ = cv2.getTextSize(alert_text, self.FONT, 0.65, 2)
+            tx = max(10, (w - tw) // 2)
+            cv2.putText(frame, alert_text, (tx, h - bar_h + th + 10), self.FONT, 0.65, (255, 255, 255), 2)
+
+        # 2. Red Border
+        border = frame.copy()
+        cv2.rectangle(border, (0, 0), (w, h), alert_color, 8)
+        cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
 
     def draw_ppe_results(
         self,
         frame: np.ndarray,
         person_statuses: List[PersonPPEStatus],
-        raw_detections: List[PPEDetection]
+        raw_detections: List[PPEDetection],
+        is_confirmed: bool = False
     ) -> None:
         """Draw person boxes with violation alerts and their associated PPE."""
-        # 1. Draw raw PPE detections first (so they are visible)
-        for det in raw_detections:
-            if det.class_name == "Person": continue # Will draw separately
-            
-            x1, y1, x2, y2 = det.bbox
-            cv2.rectangle(frame, (x1, y1), (x2, y2), self.POSITIVE_COLOR, 1)
-            cv2.putText(frame, det.class_name, (x1, y1-5), self.FONT, 0.4, self.POSITIVE_COLOR, 1)
+        # 1. Cleaned up: No longer drawing raw sub-boxes for masks/hardhats as per user request.
+        
+        # 2. Draw Unified Loud Alert (if confirmed)
+        self.draw_ppe_alert(frame, is_confirmed)
 
-        # 2. Draw Person Boxes and Alerts
+        # 3. Draw Person Boxes and Alerts
         for status in person_statuses:
             x1, y1, x2, y2 = status.person_bbox
             color = self.NEGATIVE_COLOR if status.violations else self.POSITIVE_COLOR

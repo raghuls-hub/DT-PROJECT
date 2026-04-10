@@ -31,9 +31,9 @@ class FireService:
     Refactored dynamically to guarantee thread-safe execution across infinite WebRTC cameras.
     """
 
-    COLOR_FIRE  = (0,   60, 255)
+    COLOR_FIRE  = (255, 60, 0)   # RGB
     COLOR_SMOKE = (140, 140, 140)
-    ALERT_BG    = (0,   0,  180)
+    ALERT_BG    = (180, 0, 0)    # RGB (Red)
     FONT        = cv2.FONT_HERSHEY_SIMPLEX
 
     def __init__(
@@ -48,11 +48,14 @@ class FireService:
         self.alert_cooldown_sec   = alert_cooldown_sec
         # We drop the local frame_count to ensure thread-safety across concurrent dynamic camera accesses!
 
-        print(f"🔥 Loading ONNX Fire model: {model_path}")
+        self.device = 'cpu'
+        print(f"🔥 Loading ONNX Fire model on CPU: {model_path}")
+
         self.model = YOLO(model_path, task='detect')
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self.model.predict(dummy, verbose=False)
-        print("✅ ONNX Fire model loaded natively via CUDA Execution Providers!")
+        self.model.predict(dummy, verbose=False, device=self.device)
+        print(f"✅ ONNX Fire model loaded natively on CPU!")
+
 
     def detect_fire(self, frame: np.ndarray) -> List[FireDetection]:
         try:
@@ -61,7 +64,9 @@ class FireService:
                 conf=self.confidence_threshold,
                 iou=self.iou_threshold,
                 verbose=False,
+                device=self.device
             )
+
             detections: List[FireDetection] = []
             for r in results:
                 if r.boxes is None:
@@ -82,19 +87,19 @@ class FireService:
 
     def has_smoke(self, detections: List[FireDetection]) -> bool:
         return any(d.is_smoke for d in detections)
-
     def draw_fire_boxes(self, frame: np.ndarray, detections: List[FireDetection]) -> None:
         for det in detections:
             x1, y1, x2, y2 = det.bbox
-            color = self.COLOR_FIRE if det.is_fire else self.COLOR_SMOKE
-            label = f"{det.class_name} {det.confidence:.0%}"
+            color = (255, 0, 0) # Red (RGB) for danger/violations
+            label = f"{det.class_name.upper()} {det.confidence:.0%}"
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3 if det.is_fire else 2)
             (tw, th), _ = cv2.getTextSize(label, self.FONT, 0.55, 1)
             cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 6, y1), color, -1)
             cv2.putText(frame, label, (x1 + 3, y1 - 4), self.FONT, 0.55, (255, 255, 255), 1)
 
-    def draw_fire_alert(self, frame: np.ndarray, detections: List[FireDetection]) -> None:
-        if not detections:
+
+    def draw_fire_alert(self, frame: np.ndarray, detections: List[FireDetection], is_confirmed: bool = False) -> None:
+        if not detections or not is_confirmed:
             return
             
         fire_present  = self.has_fire(detections)
@@ -102,13 +107,13 @@ class FireService:
 
         if fire_present and smoke_present:
             alert_text  = "FIRE & SMOKE DETECTED — EVACUATE IMMEDIATELY"
-            alert_color = (0, 30, 220)
+            alert_color = (220, 30, 0) # RGB Red
         elif fire_present:
             alert_text  = "FIRE DETECTED — ALERT SECURITY"
-            alert_color = (0, 60, 255)
+            alert_color = (255, 60, 0) # RGB Red/Orange
         else:
             alert_text  = "SMOKE DETECTED — CHECK AREA"
-            alert_color = (60, 120, 200)
+            alert_color = (200, 120, 60) # RGB
 
         h, w = frame.shape[:2]
         bar_h = 48
@@ -124,9 +129,9 @@ class FireService:
 
         if fire_present:
             border = frame.copy()
-            cv2.rectangle(border, (0, 0), (w, h), (0, 0, 200), 8)
+            cv2.rectangle(border, (0, 0), (w, h), (200, 0, 0), 8) # RGB Red
             cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
 
-    def annotate_frame(self, frame: np.ndarray, detections: List[FireDetection]) -> None:
+    def annotate_frame(self, frame: np.ndarray, detections: List[FireDetection], is_confirmed: bool = False) -> None:
         self.draw_fire_boxes(frame, detections)
-        self.draw_fire_alert(frame, detections)
+        self.draw_fire_alert(frame, detections, is_confirmed)

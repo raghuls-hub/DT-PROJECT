@@ -1,4 +1,5 @@
 import cv2
+import time
 import numpy as np
 from typing import List, Tuple
 from ultralytics import YOLO
@@ -35,13 +36,16 @@ class FallService:
         confidence_threshold: float = FALL_CONFIDENCE_THRESHOLD
     ):
         self.confidence_threshold = confidence_threshold
-        print(f"🦴 Loading ONNX Fall model: {model_path}")
+        self.device = 'cpu'
+        print(f"🦴 Loading ONNX Fall model on CPU: {model_path}")
+
         self.model = YOLO(model_path, task='detect')
         
         # Warmup
         dummy = np.zeros((640, 640, 3), dtype=np.uint8)
-        self.model.predict(dummy, verbose=False)
-        print("✅ ONNX Fall model loaded and warmed up!")
+        self.model.predict(dummy, verbose=False, device=self.device)
+        print(f"✅ ONNX Fall model loaded and warmed up on CPU!")
+
 
     def detect_fall(self, frame: np.ndarray) -> List[FallDetection]:
         try:
@@ -49,7 +53,9 @@ class FallService:
                 frame,
                 conf=self.confidence_threshold,
                 verbose=False,
+                device=self.device
             )
+
             detections: List[FallDetection] = []
             for r in results:
                 if r.boxes is None:
@@ -64,11 +70,45 @@ class FallService:
             print(f"⚠️ Fall detection ONNX error: {e}")
             return []
 
-    def draw_fall_boxes(self, frame: np.ndarray, detections: List[FallDetection]) -> None:
+    def draw_fall_alert(self, frame: np.ndarray, is_confirmed: bool = False) -> None:
+        if not is_confirmed:
+            return
+
+        h, w = frame.shape[:2]
+        bar_h = 48
+        alert_text = "FALL DETECTED - ASSISTANCE REQUIRED"
+        alert_color = (255, 0, 0) # RGB Red
+
+        # 1. Alert Bar (Bottom)
+        if int(time.time() * 2) % 2 == 0:
+            overlay = frame.copy()
+            cv2.rectangle(overlay, (0, h - bar_h), (w, h), alert_color, -1)
+            cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+            
+            (tw, th), _ = cv2.getTextSize(alert_text, self.FONT, 0.65, 2)
+            tx = max(10, (w - tw) // 2)
+            cv2.putText(frame, alert_text, (tx, h - bar_h + th + 10), self.FONT, 0.65, (255, 255, 255), 2)
+
+        # 2. Red Border
+        border = frame.copy()
+        cv2.rectangle(border, (0, 0), (w, h), alert_color, 8)
+        cv2.addWeighted(border, 0.6, frame, 0.4, 0, frame)
+
+    def draw_fall_boxes(self, frame: np.ndarray, detections: List[FallDetection], is_confirmed: bool = False) -> None:
+        # We now draw the boxes immediately for visual feedback, 
+        # but confirmed status can still be used for other alert logic.
+        
+        # Draw Unified Loud Alert (only if confirmed)
+        self.draw_fall_alert(frame, is_confirmed)
+
         for det in detections:
+            # Only draw for the "fallen" class as per user request
+            if det.class_name.lower() != "fallen":
+                continue
+
             x1, y1, x2, y2 = det.bbox
-            color = self.COLORS.get(det.class_name, (255, 255, 255))
-            label = f"{det.class_name.upper()} {det.confidence:.0%}"
+            color = (255, 0, 0) # Red (RGB) for violation/fall
+            label = f"FALL DETECTED {det.confidence:.0%}"
             
             # Draw Box
             cv2.rectangle(frame, (x1, y1), (x2, y2), color, 3)
@@ -78,4 +118,4 @@ class FallService:
             cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 6, y1), color, -1)
             
             # Draw Label Text
-            cv2.putText(frame, label, (x1 + 3, y1 - 4), self.FONT, 0.6, (0, 0, 0) if det.class_name == "sitting" else (255, 255, 255), 2)
+            cv2.putText(frame, label, (x1 + 3, y1 - 4), self.FONT, 0.6, (255, 255, 255), 2)

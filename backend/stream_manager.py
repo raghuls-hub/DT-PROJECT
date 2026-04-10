@@ -3,6 +3,7 @@ import threading
 import queue
 import time
 import asyncio
+import fractions
 from aiortc import VideoStreamTrack
 from av import VideoFrame
 
@@ -48,6 +49,23 @@ class NetworkCameraTrack(VideoStreamTrack):
         self.latest_fall_detections = []
         self.monitored_ppe = []  # Selection from frontend
         self.ai_frame_counter = 0
+
+        # Timestamping and playback state
+        self.frame_count = 0
+        self.fps = 30.0
+
+        # Temporal alert states
+        self.fire_start_time = None
+        self.ppe_violation_start_time = None
+        self.confirmed_fire = False
+        self.confirmed_ppe = False
+        self.confirmed_fall = False
+
+        # Dismissal delay state
+        self.fire_last_seen = 0
+        self.fall_last_seen = 0
+        self.ppe_violation_last_seen = 0
+        self.fall_frame_acc = 0
         
         # Start isolated ingestion thread
         self.thread = threading.Thread(target=self._ingest_video, daemon=True)
@@ -150,90 +168,108 @@ class NetworkCameraTrack(VideoStreamTrack):
             cap.release()
             
     def _ai_inference_loop(self):
-        """Detached Daemon thread constantly churning AI frames seamlessly in the background!"""
-        print(f"[AI-Thread] GPU background execution started for {self.camera_url}")
+        """Detached daemon thread constantly churning AI frames seamlessly in the background!"""
+        print(f"[AI-Thread] CPU background execution started for {self.camera_url}")
         
-        # Frame-grabbing architecture: ensure we process a range of models efficiently
         processed_count = 0
         
         while not self.stopped:
             if self.current_inference_frame is not None:
                 processed_count += 1
                 
-                # OPTIMIZATION: Follow project architecture for model frame grabbing, 
-                # but implement a frame-skip to avoid redundant processing.
-                if processed_count % 3 != 1:  # Run AI on 1 out of every 3 frames grabbed
+                # OPTIMIZATION: Run AI on 1 out of every 3 captured frames.
+                if processed_count % 3 != 1:
                     time.sleep(0.01)
                     continue
 
                 frame_snap = self.current_inference_frame.copy()
-                h, w = frame_snap.shape[:2]
                 
-                # 2. Fall detection on every AI frame
                 fall_detections = FALL_SERVICE_SINGLETON.detect_fall(frame_snap)
-                
-                if fall_detections:
-                    print(f"[Fall AI] {self.camera_url}: Detected {len(fall_detections)} → {[d.class_name for d in fall_detections]}")
-                
                 self.latest_fall_detections = fall_detections
-                
-                # 3. Fire Model (every AI frame)
+
                 fire_detections = FIRE_SERVICE_SINGLETON.detect_fire(frame_snap)
-                if fire_detections:
-                    print(f"[Fire AI] {self.camera_url}: Detected {len(fire_detections)}")
                 self.latest_fire_detections = fire_detections
 
-                # 4. PPE Model (Every AI frame)
-                # First get raw detections
                 raw_ppe = PPE_SERVICE_SINGLETON.detect_ppe(frame_snap)
-                # Then run person-centric logic with track-specific filtered list
                 ppe_statuses = PPE_SERVICE_SINGLETON.process_person_logic(raw_ppe, self.monitored_ppe)
-                
                 self.latest_raw_ppe_detections = raw_ppe
-                self.latest_ppe_statuses       = ppe_statuses
+                self.latest_ppe_statuses = ppe_statuses
+
+                now = time.time()
+
+                if FIRE_SERVICE_SINGLETON.has_fire(fire_detections):
+                    self.fire_last_seen = now
+                    if self.fire_start_time is None:
+                        self.fire_start_time = now
+                    elif now - self.fire_start_time >= 4.0:
+                        self.confirmed_fire = True
+                else:
+                    self.fire_start_time = None
+                    if now - self.fire_last_seen > 3.0:
+                        self.confirmed_fire = False
+
+                has_fallen = any(d.class_name.lower() == "fallen" for d in fall_detections)
+                if has_fallen:
+                    self.fall_last_seen = now
+                    self.fall_frame_acc += 1
+                    if self.fall_frame_acc >= 10:
+                        self.confirmed_fall = True
+                else:
+                    self.fall_frame_acc = 0
+                    if now - self.fall_last_seen > 3.0:
+                        self.confirmed_fall = False
+
+                has_violation = any(s.violations for s in ppe_statuses)
+                if has_violation:
+                    self.ppe_violation_last_seen = now
+                    if self.ppe_violation_start_time is None:
+                        self.ppe_violation_start_time = now
+                    elif now - self.ppe_violation_start_time >= 5.0:
+                        self.confirmed_ppe = True
+                else:
+                    self.ppe_violation_start_time = None
+                    if now - self.ppe_violation_last_seen > 3.0:
+                        self.confirmed_ppe = False
                 
-                # Anti-overflow catch
                 if self.ai_frame_counter > 15000:
                     self.ai_frame_counter = 0
                 
-                # Minor GPU relaxer
                 time.sleep(0.01)
             else:
                 time.sleep(0.05)
 
     async def recv(self):
         """Required aiortc method to retrieve the next WebRTC video frame."""
-        # Await a fresh frame from the ingestion queue, yield control back to event loop if empty
         while self.Q.empty() and not self.stopped:
-            await asyncio.sleep(0.01) 
-            
+            await asyncio.sleep(0.01)
+
         if self.stopped:
             return None
-            
+
         try:
             frame_rgb = self.Q.get_nowait()
-            
-            # Draw any available decoupled AI boxes instantaneously without processing lag
+
             if self.latest_fall_detections:
-                FALL_SERVICE_SINGLETON.draw_fall_boxes(frame_rgb, self.latest_fall_detections)
-                
-            # Fire detection inherently caches on the other frames natively
-            FIRE_SERVICE_SINGLETON.annotate_frame(frame_rgb, self.latest_fire_detections)
-            
-            # PPE Detection Results
+                FALL_SERVICE_SINGLETON.draw_fall_boxes(frame_rgb, self.latest_fall_detections, self.confirmed_fall)
+
+            FIRE_SERVICE_SINGLETON.annotate_frame(frame_rgb, self.latest_fire_detections, self.confirmed_fire)
+
             PPE_SERVICE_SINGLETON.draw_ppe_results(
-                frame_rgb, self.latest_ppe_statuses, self.latest_raw_ppe_detections
+                frame_rgb,
+                self.latest_ppe_statuses,
+                self.latest_raw_ppe_detections,
+                self.confirmed_ppe,
             )
-            
-            # Create a PyAV VideoFrame required by aiortc
-            pts, time_base = await self.next_timestamp()
+
+            self.frame_count += 1
+            pts = int(self.frame_count * (90000 / self.fps))
+            time_base = fractions.Fraction(1, 90000)
             video_frame = VideoFrame.from_ndarray(frame_rgb, format="rgb24")
             video_frame.pts = pts
             video_frame.time_base = time_base
             return video_frame
-            
+
         except queue.Empty:
-            # Recursively wait via asyncio if race condition caused emptiness
             await asyncio.sleep(0.01)
             return await self.recv()
 
@@ -254,12 +290,15 @@ class StreamManager:
 
     def get_or_create_track(self, camera_url: str, monitored_ppe: list = None) -> NetworkCameraTrack:
         if camera_url in self.active_tracks:
-            print(f"[StreamManager] Reusing existing track for {camera_url}")
             track = self.active_tracks[camera_url]
-            # Update monitoring preferences dynamically if provided
-            if monitored_ppe is not None:
-                track.monitored_ppe = monitored_ppe
-            return track
+            if track.stopped:
+                print(f"[StreamManager] Existing track has already stopped for {camera_url}. Creating a new one.")
+                self.active_tracks.pop(camera_url, None)
+            else:
+                print(f"[StreamManager] Reusing existing track for {camera_url}")
+                if monitored_ppe is not None:
+                    track.monitored_ppe = monitored_ppe
+                return track
             
         print(f"[StreamManager] Provisioning NEW Track for {camera_url}")
         track = NetworkCameraTrack(camera_url)
