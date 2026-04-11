@@ -270,327 +270,230 @@ const PPEVerificationModal = ({
   const allMet = !timedOut && streakRef.current >= CONFIRM_STREAK && requiredPPE.every((ppe) => detectedPPE.includes(ppe));
 
   return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        background: "rgba(0,0,0,0.7)",
+    <div style={{
+      position: "fixed",
+      inset: 0,
+      background: "rgba(0,0,0,0.85)",
+      display: "flex",
+      zIndex: 10000,
+      backdropFilter: "blur(6px)",
+    }}>
+
+      {/* ── LEFT: Full-screen camera feed ── */}
+      <div style={{
+        flex: 1,
+        position: "relative",
+        background: "#000",
         display: "flex",
         alignItems: "center",
         justifyContent: "center",
-        zIndex: 10000,
-        backdropFilter: "blur(8px)",
-      }}
-    >
-      <div
-        style={{
-          background: "var(--bg-1)",
-          borderRadius: 16,
-          padding: 32,
-          maxWidth: 500,
-          boxShadow: "0 20px 60px rgba(0,0,0,0.5)",
-          border: "1px solid var(--glass-border)",
-        }}
-      >
-        <h2
+        overflow: "hidden",
+      }}>
+        <video
+          ref={ppeVideoRef}
+          autoPlay
+          playsInline
+          muted
           style={{
-            marginTop: 0,
-            marginBottom: 20,
-            fontSize: 20,
-            fontWeight: 600,
+            width: "100%",
+            height: "100%",
+            objectFit: "cover",
+            display: cameraReady ? "block" : "none",
           }}
-        >
-          🔍 PPE Verification
-        </h2>
+        />
 
-        <div style={{ marginBottom: 24 }}>
-          <p style={{ marginBottom: 12, color: "var(--text-2)", fontSize: 14 }}>
+        {/* Bounding-box overlay */}
+        <canvas
+          ref={canvasRef}
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            pointerEvents: "none",
+            display: cameraReady ? "block" : "none",
+          }}
+        />
+
+        {/* Countdown badge — top-right of video */}
+        {cameraReady && !timedOut && (
+          <div style={{
+            position: "absolute",
+            top: 16, right: 16,
+            background: timeLeft <= 3 ? "rgba(239,68,68,0.9)" : "rgba(0,0,0,0.65)",
+            color: "#fff",
+            borderRadius: 8,
+            padding: "6px 14px",
+            fontSize: 18,
+            fontWeight: 700,
+            fontVariantNumeric: "tabular-nums",
+            letterSpacing: 1,
+            boxShadow: "0 2px 12px rgba(0,0,0,0.4)",
+          }}>
+            ⏱ {timeLeft}s
+          </div>
+        )}
+
+        {/* Status badge — bottom of video */}
+        {cameraReady && (
+          <div style={{
+            position: "absolute",
+            bottom: 16, left: "50%",
+            transform: "translateX(-50%)",
+            background: timedOut
+              ? "rgba(239,68,68,0.85)"
+              : allMet
+              ? "rgba(34,197,94,0.85)"
+              : "rgba(0,0,0,0.65)",
+            color: "#fff",
+            borderRadius: 8,
+            padding: "8px 20px",
+            fontSize: 14,
+            fontWeight: 600,
+            backdropFilter: "blur(4px)",
+            whiteSpace: "nowrap",
+          }}>
+            {timedOut
+              ? "❌ Timed out — attendance not marked"
+              : allMet
+              ? `✓ PPE Confirmed (${CONFIRM_STREAK}/${CONFIRM_STREAK})`
+              : `🔍 Scanning... ${streakRef.current}/${CONFIRM_STREAK} confirmed`}
+          </div>
+        )}
+
+        {/* Camera loading / error state */}
+        {!cameraReady && (
+          <div style={{ textAlign: "center", color: "#aaa" }}>
+            <div style={{ fontSize: 48, marginBottom: 12 }}>📷</div>
+            <div style={{ fontSize: 14 }}>
+              {cameraError ? `Camera Error: ${cameraError}` : "Starting camera..."}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* ── RIGHT: Controls panel ── */}
+      <div style={{
+        width: 320,
+        background: "var(--bg-1)",
+        borderLeft: "1px solid var(--glass-border)",
+        display: "flex",
+        flexDirection: "column",
+        padding: 24,
+        gap: 20,
+        overflowY: "auto",
+      }}>
+        {/* Header */}
+        <div>
+          <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>🔍 PPE Verification</h2>
+          <p style={{ margin: "8px 0 0", fontSize: 13, color: "var(--text-2)" }}>
             Worker: <strong>{worker}</strong>
           </p>
+        </div>
 
-          {/* ✅ CAMERA PREVIEW FOR PPE DETECTION */}
-          <div
-            style={{
-              marginBottom: 16,
-              borderRadius: 8,
-              overflow: "hidden",
-              background: "#000",
-              aspectRatio: "16/9",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              position: "relative",
-              minHeight: 180,
-            }}
-          >
-            <video
-              ref={ppeVideoRef}
-              autoPlay
-              playsInline
-              muted
-              style={{
-                width: "100%",
-                height: "100%",
-                objectFit: "cover",
-                display: cameraReady ? "block" : "none",
-              }}
-            />
-            {/* Bounding-box overlay — sits exactly on top of the video */}
-            <canvas
-              ref={canvasRef}
-              style={{
-                position: "absolute",
-                inset: 0,
-                width: "100%",
-                height: "100%",
-                pointerEvents: "none",
-                display: cameraReady ? "block" : "none",
-              }}
-            />
-            {/* Countdown badge */}
-            {cameraReady && !timedOut && (
-              <div style={{
-                position: "absolute",
-                top: 8, right: 8,
-                background: timeLeft <= 3 ? "rgba(239,68,68,0.85)" : "rgba(0,0,0,0.6)",
-                color: "#fff",
-                borderRadius: 6,
-                padding: "3px 8px",
-                fontSize: 13,
-                fontWeight: 700,
-                fontVariantNumeric: "tabular-nums",
-              }}>
-                ⏱ {timeLeft}s
-              </div>
-            )}
-            {!cameraReady && (
-              <div style={{ textAlign: "center", color: "var(--text-3)" }}>
-                <div style={{ fontSize: 24, marginBottom: 8 }}>📷</div>
-                <div style={{ fontSize: 12 }}>
-                  {cameraError ? `Camera Error: ${cameraError}` : "Starting camera..."}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div
-            style={{
-              marginBottom: 16,
-              padding: 8,
-              background: timedOut
-                ? "rgba(239,68,68,0.15)"
-                : cameraReady ? "rgba(34,197,94,0.15)" : "rgba(245,158,11,0.15)",
-              border: `1px solid ${
-                timedOut ? "rgba(239,68,68,0.3)" : cameraReady ? "rgba(34,197,94,0.3)" : "rgba(245,158,11,0.3)"
-              }`,
-              borderRadius: 6,
-              fontSize: 12,
-              color: timedOut ? "var(--danger)" : cameraReady ? "var(--success)" : "var(--text-3)",
-              textAlign: "center",
-              fontWeight: 600,
-            }}
-          >
-            {timedOut
-              ? "❌ Detection timed out — attendance not marked"
-              : cameraReady
-              ? allMet
-                ? `✓ PPE Confirmed (${CONFIRM_STREAK}/${CONFIRM_STREAK} detections)`
-                : `🔍 Scanning... (${streakRef.current}/${CONFIRM_STREAK} confirmed)`
-              : "⏳ Camera Starting..."}
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <p
-              style={{
-                marginBottom: 8,
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--text-3)",
-              }}
-            >
-              📹 Camera: Laptop Camera
-            </p>
-          </div>
-
-          <div style={{ marginBottom: 16 }}>
-            <p
-              style={{
-                marginBottom: 8,
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--text-3)",
-              }}
-            >
-              REQUIRED PPE:
-            </p>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {requiredPPE.map((ppe) => (
-                <div
-                  key={ppe}
-                  style={{
-                    padding: "6px 12px",
-                    borderRadius: 6,
-                    fontSize: 12,
-                    fontWeight: 600,
-                    background: "rgba(59,130,246,0.15)",
-                    color: "var(--accent)",
-                    border: "1px solid rgba(59,130,246,0.3)",
-                  }}
-                >
-                  {ppe}
-                </div>
-              ))}
-            </div>
-          </div>
-
-          <div>
-            <p
-              style={{
-                marginBottom: 8,
-                fontSize: 12,
-                fontWeight: 600,
-                color: "var(--text-3)",
-              }}
-            >
-              DETECTED PPE:
-            </p>
-            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-              {detectedPPE.length === 0 ? (
-                <div
-                  style={{
-                    fontSize: 12,
-                    color: "var(--text-3)",
-                    fontStyle: "italic",
-                    display: "flex",
-                    alignItems: "center",
-                    gap: 6,
-                    width: "100%",
-                  }}
-                >
-                  {detecting ? (
-                    <>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          animation: "spin 1s linear infinite",
-                        }}
-                      >
-                        ⏳
-                      </span>
-                      Scanning for PPE...
-                    </>
-                  ) : !cameraReady ? (
-                    <>
-                      <span
-                        style={{
-                          display: "inline-block",
-                          animation: "spin 1s linear infinite",
-                        }}
-                      >
-                        ⏳
-                      </span>
-                      Waiting for camera...
-                    </>
-                  ) : (
-                    "Starting detection... Point your webcam at yourself"
-                  )}
-                </div>
-              ) : (
-                detectedPPE.map((ppe) => (
-                  <div
-                    key={ppe}
-                    style={{
-                      padding: "6px 12px",
-                      borderRadius: 6,
-                      fontSize: 12,
-                      fontWeight: 600,
-                      background: "rgba(34,197,94,0.15)",
-                      color: "var(--success)",
-                      border: "1px solid rgba(34,197,94,0.3)",
-                    }}
-                  >
-                    ✓ {ppe}
-                  </div>
-                ))
-              )}
-            </div>
+        {/* Required PPE */}
+        <div>
+          <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 1 }}>
+            Required PPE
+          </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {requiredPPE.map((ppe) => (
+              <div key={ppe} style={{
+                padding: "5px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                background: "rgba(59,130,246,0.15)", color: "var(--accent)",
+                border: "1px solid rgba(59,130,246,0.3)",
+              }}>{ppe}</div>
+            ))}
           </div>
         </div>
 
+        {/* Detected PPE */}
+        <div>
+          <p style={{ margin: "0 0 8px", fontSize: 11, fontWeight: 700, color: "var(--text-3)", textTransform: "uppercase", letterSpacing: 1 }}>
+            Detected PPE
+          </p>
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            {detectedPPE.length === 0 ? (
+              <div style={{ fontSize: 12, color: "var(--text-3)", fontStyle: "italic", display: "flex", alignItems: "center", gap: 6 }}>
+                {detecting || !cameraReady
+                  ? <><span style={{ display: "inline-block", animation: "spin 1s linear infinite" }}>⏳</span> {!cameraReady ? "Waiting for camera..." : "Scanning..."}</>
+                  : "Point webcam at yourself"}
+              </div>
+            ) : (
+              detectedPPE.map((ppe) => (
+                <div key={ppe} style={{
+                  padding: "5px 10px", borderRadius: 6, fontSize: 12, fontWeight: 600,
+                  background: "rgba(34,197,94,0.15)", color: "var(--success)",
+                  border: "1px solid rgba(34,197,94,0.3)",
+                }}>✓ {ppe}</div>
+              ))
+            )}
+          </div>
+        </div>
+
+        {/* Alerts */}
         {timedOut && (
           <div style={{
-            padding: 12,
-            background: "rgba(239,68,68,0.15)",
-            border: "1px solid rgba(239,68,68,0.3)",
-            borderRadius: 8,
-            marginBottom: 20,
-            fontSize: 12,
-            color: "var(--danger)",
+            padding: 12, background: "rgba(239,68,68,0.15)",
+            border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8,
+            fontSize: 12, color: "var(--danger)", lineHeight: 1.5,
           }}>
-            ⏰ 10-second window expired. Required PPE was not consistently detected.
-            Attendance will NOT be marked.
+            ⏰ 10-second window expired. Required PPE was not consistently detected. Attendance will NOT be marked.
           </div>
         )}
         {!timedOut && !allMet && detectedPPE.length > 0 && (
           <div style={{
-            padding: 12,
-            background: "rgba(239,68,68,0.15)",
-            border: "1px solid rgba(239,68,68,0.3)",
-            borderRadius: 8,
-            marginBottom: 20,
-            fontSize: 12,
-            color: "var(--danger)",
+            padding: 12, background: "rgba(239,68,68,0.15)",
+            border: "1px solid rgba(239,68,68,0.3)", borderRadius: 8,
+            fontSize: 12, color: "var(--danger)",
           }}>
             ❌ Missing: {requiredPPE.filter((p) => !detectedPPE.includes(p)).join(", ")}
           </div>
         )}
 
-        <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+        {/* Spacer */}
+        <div style={{ flex: 1 }} />
+
+        {/* Action buttons */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          <button
+            onClick={() => onVerify(detectedPPE)}
+            disabled={!allMet || loading || detecting}
+            style={{
+              padding: "12px 16px", borderRadius: 8,
+              background: allMet ? "var(--success)" : "var(--text-3)",
+              color: "#fff", border: "none",
+              cursor: allMet && !loading && !detecting ? "pointer" : "not-allowed",
+              fontSize: 14, fontWeight: 700,
+              opacity: allMet && !loading && !detecting ? 1 : 0.45,
+              transition: "all 0.2s ease",
+            }}
+          >
+            {loading ? "Processing..." : "✓ Verify & Mark Present"}
+          </button>
           <button
             onClick={onCancel}
             disabled={loading}
             style={{
-              padding: "8px 16px",
-              borderRadius: 6,
+              padding: "10px 16px", borderRadius: 8,
               border: "1px solid var(--glass-border)",
-              background: "transparent",
-              color: "var(--text-2)",
+              background: "transparent", color: "var(--text-2)",
               cursor: loading ? "not-allowed" : "pointer",
-              fontSize: 12,
-              fontWeight: 600,
+              fontSize: 13, fontWeight: 600,
               opacity: loading ? 0.5 : 1,
             }}
           >
             {timedOut ? "✕ Close" : "✕ Cancel"}
           </button>
-          <button
-            onClick={() => onVerify(detectedPPE)}
-            disabled={!allMet || loading || detecting}
-            style={{
-              padding: "8px 16px",
-              borderRadius: 6,
-              background: allMet ? "var(--success)" : "var(--text-3)",
-              color: "#fff",
-              border: "none",
-              cursor:
-                allMet && !loading && !detecting ? "pointer" : "not-allowed",
-              fontSize: 12,
-              fontWeight: 600,
-              opacity: allMet && !loading && !detecting ? 1 : 0.5,
-              transition: "all 0.3s ease",
-            }}
-          >
-            {loading ? "Processing..." : "Verify & Mark Present"}
-          </button>
         </div>
-
-        <style>{`
-          @keyframes spin {
-            from { transform: rotate(0deg); }
-            to { transform: rotate(360deg); }
-          }
-        `}</style>
       </div>
+
+      <style>{`
+        @keyframes spin {
+          from { transform: rotate(0deg); }
+          to   { transform: rotate(360deg); }
+        }
+      `}</style>
     </div>
   );
 };
