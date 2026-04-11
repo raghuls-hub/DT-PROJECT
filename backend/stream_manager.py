@@ -82,6 +82,11 @@ class NetworkCameraTrack(VideoStreamTrack):
         # Start DECOUPLED AI inference thread so WebRTC doesn't stall
         self.ai_thread = threading.Thread(target=self._ai_inference_loop, daemon=True)
         self.ai_thread.start()
+    
+    @property
+    def latest_frame(self):
+        """Get the latest BGR frame for PPE verification purposes."""
+        return self.current_inference_frame
         
     def _ingest_video(self):
         """Background daemon thread to fetch video continuously."""
@@ -392,6 +397,10 @@ class StreamManager:
             track.monitored_ppe = monitored_ppe
         self.active_tracks[camera_url] = track
         return track
+    
+    def get_track(self, camera_url: str) -> NetworkCameraTrack:
+        """Get an existing track without creating one."""
+        return self.active_tracks.get(camera_url)
         
     def close_track(self, camera_url: str):
         if camera_url in self.active_tracks:

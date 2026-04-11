@@ -2,8 +2,11 @@ import asyncio
 import qrcode
 import io
 import base64
+import cv2
+import numpy as np
+import os
 from datetime import datetime, date
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from aiortc import RTCPeerConnection, RTCSessionDescription
 from pydantic import BaseModel
@@ -19,6 +22,11 @@ from database import (
     get_worker_collection,
     get_attendance_collection,
 )
+from models.ppe_service import PPEService, PersonPPEStatus, detect_ppe_for_attendance
+from config import AVAILABLE_PPE_OPTIONS, MONITORED_PPE_TYPES
+
+# ─── Setup Paths ───────────────────────────────────────────────────────────────
+ROOT_DIR = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 
 app = FastAPI(title="Smart Safety CCTV System")
 
@@ -29,6 +37,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ─── Initialize PPE Services ───────────────────────────────────────────────────
+# Live monitoring service — used exclusively by stream_manager / WebRTC pipeline
+ppe_service = PPEService(model_path=os.path.join(ROOT_DIR, "models", "basic-model.onnx"))
+
+# Attendance service — completely separate instance so attendance detection
+# never blocks or interferes with live monitoring inference
+ppe_service_attendance = PPEService(model_path=os.path.join(ROOT_DIR, "models", "basic-model.onnx"))
 
 # ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -103,6 +119,25 @@ class WorkerUpdate(BaseModel):
 
 class ScanRequest(BaseModel):
     qr_data: str      # The decoded string from the QR code
+    required_ppe: Optional[List[str]] = None  # PPE classes required for this scan
+
+class PPEDetectionRequest(BaseModel):
+    required_ppe: List[str]
+    frame_base64: Optional[str] = None  # Base64 encoded frame from browser
+    camera_url: Optional[str] = None    # Alternative: camera URL from stream_factory
+
+class PPEVerificationRequest(BaseModel):
+    worker_id: str
+    camera_url: str
+    required_ppe: List[str]
+
+class PPEVerificationResponse(BaseModel):
+    worker_name: str
+    required_ppe: List[str]
+    detected_ppe: List[str]
+    missing_ppe: List[str]
+    ppe_verified: bool
+    message: str
 
 # ─── Peer Connections ─────────────────────────────────────────────────────────
 
@@ -276,7 +311,9 @@ async def delete_worker(worker_id: str):
 
 @app.post("/attendance/scan")
 async def scan_attendance(req: ScanRequest):
-    """Receive a QR-decoded string, look up the worker, and mark attendance."""
+    """Receive a QR-decoded string, look up the worker, and create a pending attendance record.
+    If required_ppe is provided, attendance will be marked as pending_verification.
+    """
     if not req.qr_data or not req.qr_data.strip():
         raise HTTPException(status_code=400, detail="QR data is empty or invalid.")
 
@@ -303,6 +340,14 @@ async def scan_attendance(req: ScanRequest):
             detail=f"{worker['name']} is already marked Present for today at {existing['time']}."
         )
 
+    # Determine attendance status based on PPE requirements
+    if req.required_ppe and len(req.required_ppe) > 0:
+        status = "pending_verification"
+        message = f"{worker['name']} - Pending PPE verification"
+    else:
+        status = "Present"
+        message = f"{worker['name']} marked Present at {now.strftime('%I:%M %p')}"
+
     record = {
         "worker_id":   str(worker["_id"]),
         "employee_id": worker["employee_id"],
@@ -311,11 +356,216 @@ async def scan_attendance(req: ScanRequest):
         "date":        today,
         "time":        now.strftime("%I:%M %p"),
         "timestamp":   now.isoformat(),
-        "status":      "Present",
+        "status":      status,
+        "required_ppe": req.required_ppe if req.required_ppe else [],
+        "detected_ppe": [],
+        "verified_at": None,
     }
-    await acol.insert_one(record)
+    result = await acol.insert_one(record)
+    record_id = str(result.inserted_id)
+    record["_id"] = record_id
     record.pop("_id", None)
-    return {"status": "success", "message": f"{worker['name']} marked Present at {record['time']}", "record": record}
+    
+    return {
+        "status": "success",
+        "message": message,
+        "record_id": record_id,
+        "requires_ppe_verification": status == "pending_verification",
+        "record": record
+    }
+
+@app.post("/attendance/verify-ppe")
+async def verify_ppe_for_attendance(record_id: str, detected_ppe: List[str] = None):
+    """Finalize attendance after PPE verification."""
+    if not record_id:
+        raise HTTPException(status_code=400, detail="Record ID is required.")
+    
+    acol = get_attendance_collection()
+    
+    try:
+        oid = ObjectId(record_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid record ID.")
+    
+    record = await acol.find_one({"_id": oid})
+    if not record:
+        raise HTTPException(status_code=404, detail="Attendance record not found.")
+    
+    if record["status"] != "pending_verification":
+        raise HTTPException(status_code=400, detail="Record is not pending PPE verification.")
+    
+    # Check if detected PPE meets requirements
+    detected_ppe = detected_ppe or []
+    required_ppe = set(record.get("required_ppe", []))
+    detected_ppe_set = set(detected_ppe)
+    
+    missing_ppe = required_ppe - detected_ppe_set
+    
+    if missing_ppe:
+        # PPE verification failed
+        await acol.update_one(
+            {"_id": oid},
+            {
+                "$set": {
+                    "status": "rejected",
+                    "detected_ppe": detected_ppe,
+                    "verified_at": datetime.now().isoformat(),
+                    "rejection_reason": f"Missing PPE: {', '.join(missing_ppe)}"
+                }
+            }
+        )
+        raise HTTPException(
+            status_code=400,
+            detail=f"PPE verification failed. Missing: {', '.join(missing_ppe)}"
+        )
+    
+    # PPE verification passed
+    now = datetime.now()
+    await acol.update_one(
+        {"_id": oid},
+        {
+            "$set": {
+                "status": "Present",
+                "detected_ppe": detected_ppe,
+                "verified_at": now.isoformat(),
+            }
+        }
+    )
+    
+    updated_record = await acol.find_one({"_id": oid})
+    return {
+        "status": "success",
+        "message": f"{updated_record['name']} marked Present (PPE verified)",
+        "record": _serialize(updated_record)
+    }
+
+@app.post("/attendance/verify-ppe-frame")
+async def verify_ppe_frame(req: PPEDetectionRequest):
+    """Run PPE detection on a base64 frame or camera URL.
+    
+    Accepts either:
+    - frame_base64: Base64 encoded JPEG frame from browser camera
+    - camera_url: Network camera URL to detect from
+    """
+    if not req.required_ppe or len(req.required_ppe) == 0:
+        raise HTTPException(status_code=400, detail="No PPE classes specified to verify.")
+    
+    frame = None
+    try:
+        # Option 1: Use base64 frame from browser
+        if req.frame_base64:
+            import base64
+            frame_bytes = base64.b64decode(req.frame_base64.split(",")[-1])
+            nparr = np.frombuffer(frame_bytes, np.uint8)
+            frame = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            if frame is None:
+                raise ValueError("Failed to decode base64 frame")
+        
+        # Option 2: Use network camera
+        elif req.camera_url:
+            track = stream_factory.get_track(req.camera_url)
+            if not track or not hasattr(track, 'latest_frame'):
+                raise HTTPException(status_code=404, detail="Camera not accessible.")
+            frame = track.latest_frame
+            if frame is None:
+                raise HTTPException(status_code=400, detail="No frame available from camera.")
+        
+        else:
+            raise HTTPException(status_code=400, detail="Either frame_base64 or camera_url required.")
+        
+        if frame is None:
+            raise HTTPException(status_code=400, detail="Could not obtain frame for detection.")
+        
+        # Run attendance-specific PPE detection in its own thread
+        loop = asyncio.get_event_loop()
+        result = await loop.run_in_executor(
+            None,
+            detect_ppe_for_attendance,
+            ppe_service_attendance,
+            frame,
+            req.required_ppe,
+        )
+
+        return {
+            "status": "success",
+            **result,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PPE detection error: {str(e)}")
+
+@app.post("/attendance/verify-ppe-from-camera")
+async def verify_ppe_from_camera(worker_id: str, camera_url: str, required_ppe: str):
+    """Run PPE detection on a camera feed and return detected PPE for verification.
+    
+    Query params:
+    - worker_id: worker identifier
+    - camera_url: camera URL to detect from
+    - required_ppe: comma-separated PPE classes (e.g., "Hardhat,Safety Vest")
+    """
+    if not required_ppe or required_ppe.strip() == "":
+        raise HTTPException(status_code=400, detail="No PPE classes specified to verify.")
+    
+    # Parse comma-separated required_ppe
+    required_ppe_list = [ppe.strip() for ppe in required_ppe.split(",")]
+    
+    try:
+        # Get the camera track from stream_factory
+        track = stream_factory.get_track(camera_url)
+        if not track or not hasattr(track, 'latest_frame'):
+            raise HTTPException(status_code=404, detail="Camera not accessible or no frame available.")
+        
+        # Get the latest frame
+        frame = track.latest_frame
+        if frame is None:
+            raise HTTPException(status_code=400, detail="No frame available from camera.")
+        
+        # Run PPE detection
+        detections = ppe_service.detect_ppe(frame)
+        person_statuses = ppe_service.process_person_logic(detections, required_ppe_list)
+        
+        if not person_statuses:
+            raise HTTPException(status_code=400, detail="No person detected in camera feed.")
+        
+        # Get the first person's PPE status
+        person_status = person_statuses[0]
+        detected_ppe = person_status.present_ppe
+        
+        return {
+            "status": "success",
+            "detected_ppe": detected_ppe,
+            "missing_ppe": person_status.missing_ppe,
+            "ppe_verified": not person_status.violations,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"PPE verification error: {str(e)}")
+
+@app.get("/ppe/options")
+async def get_ppe_options():
+    """Return available PPE classes for selection."""
+    return {
+        "available_ppe": MONITORED_PPE_TYPES,
+        "all_ppe": AVAILABLE_PPE_OPTIONS
+    }
+
+@app.delete("/attendance/{record_id}")
+async def cancel_attendance(record_id: str):
+    """Delete a pending_verification attendance record (e.g. PPE timed out)."""
+    acol = get_attendance_collection()
+    try:
+        oid = ObjectId(record_id)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid record ID.")
+    record = await acol.find_one({"_id": oid})
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found.")
+    if record["status"] != "pending_verification":
+        raise HTTPException(status_code=400, detail="Only pending records can be cancelled.")
+    await acol.delete_one({"_id": oid})
+    return {"status": "cancelled", "record_id": record_id}
 
 @app.get("/attendance")
 async def get_attendance(date: Optional[str] = None):

@@ -1,5 +1,6 @@
 import cv2
 import time
+import threading
 import numpy as np
 from typing import List, Tuple, Optional, Dict
 from ultralytics import YOLO
@@ -196,3 +197,84 @@ class PPEService:
             (tw, th), _ = cv2.getTextSize(label, self.FONT, 0.5, 1)
             cv2.rectangle(frame, (x1, y1 - th - 10), (x1 + tw + 5, y1), color, -1)
             cv2.putText(frame, label, (x1 + 2, y1 - 7), self.FONT, 0.5, self.LABEL_COLOR, 1)
+
+
+# ─── Attendance-specific PPE detection (isolated, separate thread) ─────────────
+
+# Class-specific colors for attendance drawing (BGR)
+_ATTENDANCE_CLASS_COLORS: Dict[str, Tuple[int, int, int]] = {
+    "Hardhat":     (0, 200, 0),      # Green
+    "Mask":        (255, 165, 0),    # Orange
+    "Safety Vest": (0, 180, 255),    # Cyan
+    "Person":      (200, 200, 200),  # Grey
+}
+_ATTENDANCE_DEFAULT_COLOR = (180, 180, 0)  # Yellow for any other class
+
+_attendance_lock = threading.Lock()
+
+
+def detect_ppe_for_attendance(
+    service: "PPEService",
+    frame: np.ndarray,
+    required_ppe: List[str],
+) -> dict:
+    """
+    Attendance-specific PPE detection.
+    - Runs under a thread lock so it never interferes with live monitoring.
+    - Detects ALL PPE classes directly (no person-centric logic required).
+    - Draws labeled bounding boxes for every detected class on the frame.
+    - Returns detected classes, missing classes, and whether all required PPE is present.
+    """
+    with _attendance_lock:
+        try:
+            results = service.model.predict(
+                frame,
+                conf=service.confidence_threshold,
+                iou=service.iou_threshold,
+                verbose=False,
+                device=service.device,
+            )
+        except Exception as exc:
+            print(f"[PPEService][Attendance] Inference error: {exc}")
+            return {
+                "detected_ppe": [],
+                "missing_ppe": required_ppe,
+                "ppe_verified": False,
+                "message": f"Inference error: {exc}",
+            }
+
+    detected_classes: List[str] = []
+    boxes_out: List[dict] = []
+
+    for r in results:
+        if r.boxes is None:
+            continue
+        for box in r.boxes:
+            cls_name = service.model.names[int(box.cls[0])]
+            conf     = float(box.conf[0])
+            x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+
+            # BGR → send as [R,G,B] so frontend can use rgba()
+            bgr = _ATTENDANCE_CLASS_COLORS.get(cls_name, _ATTENDANCE_DEFAULT_COLOR)
+            boxes_out.append({
+                "class_name": cls_name,
+                "conf": round(conf, 2),
+                "bbox": [x1, y1, x2, y2],
+                "color": [bgr[2], bgr[1], bgr[0]],
+            })
+
+            if cls_name in MONITORED_PPE_TYPES and cls_name not in detected_classes:
+                detected_classes.append(cls_name)
+
+    required_set = set(required_ppe)
+    detected_set = set(detected_classes)
+    missing      = sorted(required_set - detected_set)
+    ppe_verified = len(missing) == 0 and bool(required_set)
+
+    return {
+        "detected_ppe": detected_classes,
+        "missing_ppe":  missing,
+        "ppe_verified": ppe_verified,
+        "boxes":        boxes_out,
+        "message":      "All PPE detected" if ppe_verified else f"Missing: {', '.join(missing)}",
+    }
