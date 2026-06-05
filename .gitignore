@@ -48,8 +48,8 @@ backend/.env
 # *.pt
 # *.onnx
 # *.weights
-models/*.onnx
-models/*.pt
+# models/*.onnx
+# models/*.pt
 
 # --- Temporary / Test Outputs ---
 # *.mp4
