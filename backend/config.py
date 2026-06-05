@@ -29,10 +29,14 @@ YOLO_CLASSES = [
 
 PPE_VIOLATION_THRESHOLD = int(os.getenv("PPE_VIOLATION_THRESHOLD", "15"))
 
-PPE_CONFIDENCE_THRESHOLD  = float(os.getenv("PPE_CONFIDENCE_THRESHOLD",  "0.45"))
+PPE_CONFIDENCE_THRESHOLD  = float(os.getenv("PPE_CONFIDENCE_THRESHOLD",  "0.50"))
 PPE_IOU_THRESHOLD         = float(os.getenv("PPE_IOU_THRESHOLD",         "0.40"))
-
-FIRE_CONFIDENCE_THRESHOLD = float(os.getenv("FIRE_CONFIDENCE_THRESHOLD", "0.40"))
+FIRE_CONFIDENCE_THRESHOLD = float(os.getenv("FIRE_CONFIDENCE_THRESHOLD", "0.35"))
 FIRE_IOU_THRESHOLD        = float(os.getenv("FIRE_IOU_THRESHOLD",        "0.45"))
 
 FALL_CONFIDENCE_THRESHOLD = float(os.getenv("FALL_CONFIDENCE_THRESHOLD", "0.50"))
+
+# Notification behavior
+NOTIFY_CONSECUTIVE_THRESHOLD = int(os.getenv("NOTIFY_CONSECUTIVE_THRESHOLD", "3"))
+# Cooldown per violation type in seconds (default 3 minutes)
+NOTIFY_COOLDOWN_SECONDS = int(os.getenv("NOTIFY_COOLDOWN_SECONDS", "180"))

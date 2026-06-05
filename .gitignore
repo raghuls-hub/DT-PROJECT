@@ -45,21 +45,21 @@ backend/.env
 
 # --- AI Models / Large Files ---
 # These are large binary files that should not be in git (use LFS if needed)
-*.pt
-*.onnx
-*.weights
+# *.pt
+# *.onnx
+# *.weights
 models/*.onnx
 models/*.pt
 
 # --- Temporary / Test Outputs ---
-*.mp4
+# *.mp4
 *.txt
 *.html
 fall_names.txt
 model_names.txt
 output.txt
-test_results.txt
-output_test_fall.mp4
-output_test_fire.mp4
-output_test_ppe.mp4
-/videos
+# test_results.txt
+# output_test_fall.mp4
+# output_test_fire.mp4
+# output_test_ppe.mp4
+# /videos

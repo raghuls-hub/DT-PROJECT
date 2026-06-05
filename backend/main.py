@@ -602,9 +602,10 @@ async def offer(params: OfferRequest):
     endpoint = camera_doc.get("endpoint") if camera_doc else None
 
     video_track = stream_factory.get_or_create_track(
-        params.camera_url, 
+        params.camera_url,
         params.monitored_ppe,
-        endpoint
+        endpoint,
+        camera_doc.get("name") if camera_doc else None,
     )
     pc.addTrack(video_track)
 
